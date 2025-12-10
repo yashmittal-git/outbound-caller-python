@@ -1,6 +1,9 @@
 version: '3.8'
 
 services:
+  # API Server: Receives HTTP requests and creates dispatches via lk CLI
+  # This container needs the lk CLI to execute dispatch commands
+  # Uses the default CMD from Dockerfile (python api_server.py)
   api-server:
     build: .
     container_name: outbound-caller-api
@@ -20,6 +23,7 @@ services:
     volumes:
       # Mount .env.local if it exists (for local development)
       - ./.env.local:/app/.env.local:ro
+    # Explicitly set command (matches Dockerfile default, but makes it clear)
     command: python api_server.py
     restart: unless-stopped
     healthcheck:
@@ -29,6 +33,10 @@ services:
       retries: 3
       start_period: 10s
 
+  # Agent Worker: Connects to LiveKit server and processes dispatches
+  # This container does NOT need the lk CLI - it just runs the agent worker
+  # Flow: API Server -> lk dispatch create -> LiveKit Server -> Agent Worker
+  # Overrides Dockerfile default CMD to run the agent worker instead of Flask server
   agent:
     build: .
     container_name: outbound-caller-agent
@@ -46,6 +54,8 @@ services:
     volumes:
       # Mount .env.local if it exists (for local development)
       - ./.env.local:/app/.env.local:ro
+    # Override Dockerfile default CMD - run agent worker instead of Flask server
     command: python agent.py dev
     restart: unless-stopped
-    # Agent runs independently, no dependency on API server
+    # Agent worker connects to LiveKit server independently
+    # It receives job assignments when dispatches are created via the API

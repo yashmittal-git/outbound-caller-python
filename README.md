@@ -101,10 +101,34 @@ curl -X POST http://localhost:5000/dispatch \
 
 ## Docker Setup
 
+### Architecture Overview
+
+The system consists of two containers that work together:
+
+1. **API Server Container** (`api-server`):
+   - Receives HTTP POST requests to `/dispatch`
+   - Executes `lk dispatch create` command to create dispatches
+   - Sends dispatch requests to the LiveKit server
+   - **Needs**: `lk` CLI installed (for creating dispatches)
+
+2. **Agent Worker Container** (`agent`):
+   - Runs `python agent.py dev` to connect to LiveKit server as a worker
+   - Registers itself with agent name "outbound-caller"
+   - Listens for job assignments from LiveKit server
+   - When a dispatch is created, LiveKit server routes it to this worker
+   - Executes the actual call handling logic
+   - **Needs**: Agent code and dependencies (doesn't need `lk` CLI, but it's installed since containers share the same Dockerfile)
+
+**Flow**: 
+```
+HTTP Request → API Container → lk dispatch create → LiveKit Server → Agent Worker Container → Executes Call
+```
+
 ### Prerequisites
 
 1. Ensure you have Docker and Docker Compose installed
 2. Copy `.env.example` to `.env.local` and fill in the required values (same as Dev Setup above)
+3. Ensure your LiveKit server is running and accessible (configured via `LIVEKIT_URL`)
 
 ### Running with Docker Compose
 
@@ -126,7 +150,11 @@ The services will be available at:
 - **Health Check**: http://localhost:5000/health
 - **Agent Worker**: Running in background, waiting for dispatches
 
-**Note**: The agent worker must be running (`python agent.py dev`) to accept dispatches created via the API. Both services are started automatically with docker-compose.
+**Important Notes**:
+- Both containers are **required** and work together
+- The API container creates dispatches, but the agent container processes them
+- The agent worker must be running (`python agent.py dev`) to accept dispatches created via the API
+- Both services connect to the same LiveKit server (configured via `LIVEKIT_URL`)
 
 ### API Endpoints
 

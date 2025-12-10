@@ -41,5 +41,8 @@ RUN python agent.py download-files 2>&1 | tee /tmp/download-files.log || \
 # 8080 for agent (if needed)
 EXPOSE 5000 8080
 
-# Default command (can be overridden in docker-compose)
+# Default command for API server
+# This is overridden in docker-compose.yml for the agent service
+# - api-server: uses this default (python api_server.py)
+# - agent: overrides with (python agent.py dev)
 CMD ["python", "api_server.py"]
