@@ -18,12 +18,16 @@ from livekit.agents import (
     cli,
     WorkerOptions,
     RoomInputOptions,
+    stt,
+    tts,
+    llm,
 )
 from livekit.plugins import (
     deepgram,
     openai,
     cartesia,
     silero,
+    elevenlabs,
     noise_cancellation,  # noqa: F401
 )
 from livekit.plugins.turn_detector.english import EnglishModel
@@ -34,77 +38,89 @@ load_dotenv(dotenv_path=".env.local")
 logger = logging.getLogger("outbound-caller")
 logger.setLevel(logging.INFO)
 
-outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
+
+def _format_prompt(prompt: str, variables: dict[str, Any]) -> str:
+    """Format prompt template with variables."""
+    try:
+        return prompt.format(**variables)
+    except KeyError as e:
+        logger.warning(f"Missing variable in prompt template: {e}, using prompt as-is")
+        return prompt
+    except Exception as e:
+        logger.warning(f"Error formatting prompt: {e}, using prompt as-is")
+        return prompt
+
+
+def _create_stt(stt_config: dict[str, Any]) -> stt.STT:
+    """Create STT provider based on configuration."""
+    provider = stt_config.get("provider", "deepgram").lower()
+    # Remove provider from config to pass remaining as kwargs
+    config = {k: v for k, v in stt_config.items() if k != "provider" and v is not None}
+    
+    if provider == "deepgram":
+        return deepgram.STT(**config)
+    elif provider == "openai":
+        return openai.STT(**config)
+    else:
+        raise ValueError(f"Unsupported STT provider: {provider}")
+
+
+def _create_tts(tts_config: dict[str, Any]) -> tts.TTS:
+    """Create TTS provider based on configuration."""
+    provider = tts_config.get("provider", "elevenlabs").lower()
+    # Remove provider from config to pass remaining as kwargs
+    config = {k: v for k, v in tts_config.items() if k != "provider" and v is not None}
+    
+    if provider == "elevenlabs":
+        # Set default voice_id if not provided
+        if "voice_id" not in config:
+            config["voice_id"] = "Sljl8mdsZ6BckhbY2Pon"
+        return elevenlabs.TTS(**config)
+    elif provider == "cartesia":
+        return cartesia.TTS(**config)
+    elif provider == "openai":
+        return openai.TTS(**config)
+    elif provider == "deepgram":
+        return deepgram.TTS(**config)
+    else:
+        raise ValueError(f"Unsupported TTS provider: {provider}")
+
+
+def _create_llm(llm_config: dict[str, Any]) -> llm.LLM:
+    """Create LLM provider based on configuration."""
+    provider = llm_config.get("provider", "openai").lower()
+    # Remove provider from config to pass remaining as kwargs
+    config = {k: v for k, v in llm_config.items() if k != "provider" and v is not None}
+    
+    if provider == "openai":
+        return openai.LLM(**config)
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 class OutboundCaller(Agent):
     def __init__(
         self,
         *,
-        name: str,
-        appointment_time: str,
-        dial_info: dict[str, Any],
+        instructions: str,
+        metadata: dict[str, Any],
     ):
-        super().__init__(
-            instructions=f"""
-            You are a scheduling assistant for a dental practice. Your interface with user will be voice.
-            You will be on a call with a patient who has an upcoming appointment. Your goal is to confirm the appointment details.
-            As a customer service representative, you will be polite and professional at all times. Allow user to end the conversation.
-
-            When the user would like to be transferred to a human agent, first confirm with them. upon confirmation, use the transfer_call tool.
-            The customer's name is {name}. His appointment is on {appointment_time}.
-            """
-        )
+        super().__init__(instructions=instructions)
         # keep reference to the participant for transfers
         self.participant: rtc.RemoteParticipant | None = None
-
-        self.dial_info = dial_info
+        self.metadata = metadata
 
     def set_participant(self, participant: rtc.RemoteParticipant):
         self.participant = participant
 
     async def hangup(self):
         """Helper function to hang up the call by deleting the room"""
-
         job_ctx = get_job_context()
         await job_ctx.api.room.delete_room(
             api.DeleteRoomRequest(
                 room=job_ctx.room.name,
             )
         )
-
-    @function_tool()
-    async def transfer_call(self, ctx: RunContext):
-        """Transfer the call to a human agent, called after confirming with the user"""
-
-        transfer_to = self.dial_info["transfer_to"]
-        if not transfer_to:
-            return "cannot transfer call"
-
-        logger.info(f"transferring call to {transfer_to}")
-
-        # let the message play fully before transferring
-        await ctx.session.generate_reply(
-            instructions="let the user know you'll be transferring them"
-        )
-
-        job_ctx = get_job_context()
-        try:
-            await job_ctx.api.sip.transfer_sip_participant(
-                api.TransferSIPParticipantRequest(
-                    room_name=job_ctx.room.name,
-                    participant_identity=self.participant.identity,
-                    transfer_to=f"tel:{transfer_to}",
-                )
-            )
-
-            logger.info(f"transferred call to {transfer_to}")
-        except Exception as e:
-            logger.error(f"error transferring call: {e}")
-            await ctx.session.generate_reply(
-                instructions="there was an error transferring the call."
-            )
-            await self.hangup()
 
     @function_tool()
     async def end_call(self, ctx: RunContext):
@@ -118,79 +134,60 @@ class OutboundCaller(Agent):
 
         await self.hangup()
 
-    @function_tool()
-    async def look_up_availability(
-        self,
-        ctx: RunContext,
-        date: str,
-    ):
-        """Called when the user asks about alternative appointment availability
-
-        Args:
-            date: The date of the appointment to check availability for
-        """
-        logger.info(
-            f"looking up availability for {self.participant.identity} on {date}"
-        )
-        await asyncio.sleep(3)
-        return {
-            "available_times": ["1pm", "2pm", "3pm"],
-        }
-
-    @function_tool()
-    async def confirm_appointment(
-        self,
-        ctx: RunContext,
-        date: str,
-        time: str,
-    ):
-        """Called when the user confirms their appointment on a specific date.
-        Use this tool only when they are certain about the date and time.
-
-        Args:
-            date: The date of the appointment
-            time: The time of the appointment
-        """
-        logger.info(
-            f"confirming appointment for {self.participant.identity} on {date} at {time}"
-        )
-        return "reservation confirmed"
-
-    @function_tool()
-    async def detected_answering_machine(self, ctx: RunContext):
-        """Called when the call reaches voicemail. Use this tool AFTER you hear the voicemail greeting"""
-        logger.info(f"detected answering machine for {self.participant.identity}")
-        await self.hangup()
-
 
 async def entrypoint(ctx: JobContext):
     logger.info(f"connecting to room {ctx.room.name}")
     await ctx.connect()
 
-    # when dispatching the agent, we'll pass it the approriate info to dial the user
-    # dial_info is a dict with the following keys:
-    # - phone_number: the phone number to dial
-    # - transfer_to: the phone number to transfer the call to when requested
-    dial_info = json.loads(ctx.job.metadata)
-    participant_identity = phone_number = dial_info["phone_number"]
-
-    # look up the user's phone number and appointment details
+    # Parse metadata from dispatch request
+    metadata = json.loads(ctx.job.metadata)
+    
+    # Extract configuration with defaults
+    phone_number = metadata.get("phone_number")
+    if not phone_number:
+        raise ValueError("phone_number is required in metadata")
+    
+    participant_identity = phone_number
+    customer_name = metadata.get("customer_name", "Customer")
+    sip_trunk_id = metadata.get("sip_trunk_id") or os.getenv("SIP_OUTBOUND_TRUNK_ID")
+    if not sip_trunk_id:
+        raise ValueError("sip_trunk_id is required in metadata or SIP_OUTBOUND_TRUNK_ID environment variable")
+    
+    # Get provider configurations with defaults
+    tts_config = metadata.get("tts_config", {"provider": "elevenlabs", "voice_id": "Sljl8mdsZ6BckhbY2Pon"})
+    stt_config = metadata.get("stt_config", {"provider": "deepgram", "model": "nova-2", "language": "en"})
+    llm_config = metadata.get("llm_config", {"provider": "openai", "model": "gpt-4.1-mini"})
+    
+    # Get prompt and variables
+    prompt = metadata.get("prompt", "You are a helpful assistant.")
+    variables = metadata.get("variables", {})
+    
+    # Format prompt with variables
+    instructions = _format_prompt(prompt, variables)
+    
+    # Create agent with instructions
     agent = OutboundCaller(
-        name="Jayden",
-        appointment_time="next Tuesday at 3pm",
-        dial_info=dial_info,
+        instructions=instructions,
+        metadata=metadata,
     )
 
-    # the following uses GPT-4o, Deepgram and Cartesia
+    # Create providers dynamically based on configuration
+    stt_provider = _create_stt(stt_config)
+    tts_provider = _create_tts(tts_config)
+    llm_provider = _create_llm(llm_config)
+
+    logger.info(
+        f"Creating session with STT: {stt_config.get('provider')}, "
+        f"TTS: {tts_config.get('provider')}, LLM: {llm_config.get('provider')}"
+    )
+
+    # Create agent session with configured providers
     session = AgentSession(
         turn_detection=EnglishModel(),
         vad=silero.VAD.load(),
-        stt=deepgram.STT(),
-        # you can also use OpenAI's TTS with openai.TTS()
-        tts=cartesia.TTS(),
-        llm=openai.LLM(model="gpt-4o"),
-        # you can also use a speech-to-speech model like OpenAI's Realtime API
-        # llm=openai.realtime.RealtimeModel()
+        stt=stt_provider,
+        tts=tts_provider,
+        llm=llm_provider,
     )
 
     # start the session first before dialing, to ensure that when the user picks up
@@ -211,7 +208,7 @@ async def entrypoint(ctx: JobContext):
         await ctx.api.sip.create_sip_participant(
             api.CreateSIPParticipantRequest(
                 room_name=ctx.room.name,
-                sip_trunk_id=outbound_trunk_id,
+                sip_trunk_id=sip_trunk_id,
                 sip_call_to=phone_number,
                 participant_identity=participant_identity,
                 # function blocks until user answers the call, or if the call fails
