@@ -70,3 +70,137 @@ lk dispatch create \
   --agent-name outbound-caller \
   --metadata '{"phone_number": "+1234567890", "transfer_to": "+9876543210"}'
 ```
+
+Or use the Flask API server (see Docker Setup below):
+
+```shell
+curl -X POST http://localhost:5000/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone_number": "+1234567890",
+    "customer_name": "John Doe",
+    "tts_config": {
+      "provider": "elevenlabs",
+      "voice_id": "Sljl8mdsZ6BckhbY2Pon"
+    },
+    "stt_config": {
+      "provider": "deepgram",
+      "model": "nova-2",
+      "language": "en",
+      "base_url": "wss://deepgram.convin.ai/v1/listen"
+    },
+    "llm_config": {
+      "provider": "openai",
+      "model": "gpt-4.1-mini"
+    },
+    "prompt": "Talk.",
+    "variables": {},
+    "sip_trunk_id": "ST_jrcQk5yYCvGg"
+  }'
+```
+
+## Docker Setup
+
+### Prerequisites
+
+1. Ensure you have Docker and Docker Compose installed
+2. Copy `.env.example` to `.env.local` and fill in the required values (same as Dev Setup above)
+
+### Running with Docker Compose
+
+Simply run:
+
+```shell
+docker-compose up
+```
+
+This will:
+- Build the Docker image with all dependencies
+- Download required model files
+- Install LiveKit CLI (`lk`) for creating dispatches
+- Start the Flask API server on port 5000
+- Start the agent worker (running `python agent.py dev`) to accept dispatches
+
+The services will be available at:
+- **API Server**: http://localhost:5000
+- **Health Check**: http://localhost:5000/health
+- **Agent Worker**: Running in background, waiting for dispatches
+
+**Note**: The agent worker must be running (`python agent.py dev`) to accept dispatches created via the API. Both services are started automatically with docker-compose.
+
+### API Endpoints
+
+#### POST /dispatch
+
+Create an outbound call dispatch.
+
+**Request Body:**
+```json
+{
+  "phone_number": "+1234567890",
+  "customer_name": "John Doe",
+  "tts_config": {
+    "provider": "elevenlabs",
+    "voice_id": "Sljl8mdsZ6BckhbY2Pon"
+  },
+  "stt_config": {
+    "provider": "deepgram",
+    "model": "nova-2",
+    "language": "en",
+    "base_url": "wss://deepgram.convin.ai/v1/listen"
+  },
+  "llm_config": {
+    "provider": "openai",
+    "model": "gpt-4.1-mini"
+  },
+  "prompt": "Talk.",
+  "variables": {},
+  "sip_trunk_id": "ST_jrcQk5yYCvGg"
+}
+```
+
+**Query Parameters (optional):**
+- `agent_name`: Override the default agent name
+- `room_name`: Specify a room name (if not provided, a new room will be created)
+- `create_new_room`: Whether to create a new room (default: true)
+
+**Response:**
+```json
+{
+  "success": true,
+  "dispatch_id": "dispatch_id_here",
+  "room_name": "room-abc123",
+  "agent_name": "outbound-caller"
+}
+```
+
+#### GET /health
+
+Health check endpoint.
+
+**Response:**
+```json
+{
+  "status": "healthy"
+}
+```
+
+### Running in Background
+
+To run in detached mode:
+
+```shell
+docker-compose up -d
+```
+
+To view logs:
+
+```shell
+docker-compose logs -f
+```
+
+To stop:
+
+```shell
+docker-compose down
+```

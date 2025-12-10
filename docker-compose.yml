@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  api-server:
+    build: .
+    container_name: outbound-caller-api
+    ports:
+      - "5000:5000"
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - SIP_OUTBOUND_TRUNK_ID=${SIP_OUTBOUND_TRUNK_ID}
+      - AGENT_NAME=${AGENT_NAME:-outbound-caller}
+      - API_PORT=5000
+      - API_HOST=0.0.0.0
+      - FLASK_DEBUG=${FLASK_DEBUG:-false}
+    env_file:
+      - .env.local
+    volumes:
+      # Mount .env.local if it exists (for local development)
+      - ./.env.local:/app/.env.local:ro
+    command: python api_server.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  agent:
+    build: .
+    container_name: outbound-caller-agent
+    environment:
+      - LIVEKIT_URL=${LIVEKIT_URL}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - SIP_OUTBOUND_TRUNK_ID=${SIP_OUTBOUND_TRUNK_ID}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+    env_file:
+      - .env.local
+    volumes:
+      # Mount .env.local if it exists (for local development)
+      - ./.env.local:/app/.env.local:ro
+    command: python agent.py dev
+    restart: unless-stopped
+    # Agent runs independently, no dependency on API server

@@ -31,6 +31,7 @@ from livekit.plugins import (
     noise_cancellation,  # noqa: F401
 )
 from livekit.plugins.turn_detector.english import EnglishModel
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 
 # load environment variables, this is optional, only used for local development
@@ -182,8 +183,26 @@ async def entrypoint(ctx: JobContext):
     )
 
     # Create agent session with configured providers
+    # Try to use turn detector, fallback to "stt" if files aren't available
+    turn_detection_mode = "stt"  # Default fallback
+    try:
+        # Try to initialize EnglishModel - if files are available, use it
+        # Otherwise, we'll catch the error and use "stt" mode
+        turn_detector = EnglishModel()
+        turn_detection_mode = turn_detector
+        logger.info("Using EnglishModel for turn detection")
+    except Exception as e:
+        # Catch any exception during turn detector initialization
+        # This includes RuntimeError (missing files), ImportError, OSError, etc.
+        logger.warning(
+            f"Could not initialize turn detector (files may not be downloaded): {type(e).__name__}: {e}. "
+            "Falling back to STT-based turn detection. "
+            "Run 'python agent.py download-files' to download turn detector models."
+        )
+        turn_detection_mode = "stt"
+    
     session = AgentSession(
-        turn_detection=EnglishModel(),
+        turn_detection=turn_detection_mode,
         vad=silero.VAD.load(),
         stt=stt_provider,
         tts=tts_provider,
